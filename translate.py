@@ -1,9 +1,9 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 import pysrt
 import json
 import requests
-from openai import OpenAI
+import sys
 import os
 
 # Global variables
@@ -11,6 +11,12 @@ translateEngine = "gpt"
 blocks_to_translate = 10
 original_subtitles = None
 input_file_path = None  # Initialize input_file_path as None
+api_keys = {}
+
+# Configuration file path
+config_file_name = 'secrets.config'
+application_path = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+config_path = os.path.join(application_path, config_file_name)
 
 def import_file():
     global original_subtitles, input_file_path  # Declare original_subtitles and input_file_path as global
@@ -30,22 +36,39 @@ def parse_srt(file_path):
     return pysrt.open(file_path)
 
 def display_subtitles(subtitles, file_path):
-    output_text.delete("1.0", tk.END)  # Clear the output section
-    output_text.insert(tk.END, f"Imported file: {file_path}\n\n")
-    output_text.insert(tk.END, "Subtitles loaded successfully.\n\n")
+    status_text.delete("1.0", tk.END)  # Clear the output section
+    status_text.insert(tk.END, f"Imported file: {file_path}\n\n")
+    status_text.insert(tk.END, "Subtitles loaded successfully.\n\n")
 
-def read_api_key(service_name):
+def load_api_keys():
+    global api_keys
     try:
-        with open('secrets.config', 'r') as file:
-            for line in file:
-                key, value = line.strip().split(':')
-                if key == service_name:
-                    return value
-        messagebox.showerror("Error", f"API key for {service_name} not found.")
-        return None
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as file:
+                for line in file:
+                    key, value = line.strip().split(':')
+                    api_keys[key] = value
+                    #status_text.insert(tk.END, f"{key} API key loaded: {value}\n")
+        else:
+            if getattr(sys, 'frozen', False):
+                # Running as a packaged executable
+                prompt_for_config()
+            else:
+                messagebox.showerror("Error", f"Configuration file {config_file_name} not found.")
     except Exception as e:
-        messagebox.showerror("Error", f"Failed to read API key: {e}")
-        return None
+        messagebox.showerror("Error", f"Failed to load API keys: {e}")
+
+def read_specific_api_key(service_name):
+    return api_keys.get(service_name, None)
+
+def prompt_for_config():
+    config_content = simpledialog.askstring("Input Required", "Please paste the content of your secrets.config file:")
+    if config_content:
+        with open(config_path, 'w') as file:
+            file.write(config_content)
+        load_api_keys()
+    else:
+        messagebox.showerror("Error", "No content provided for configuration.")
 
 def reset_subtitles():
     global subtitles, input_file_path
@@ -81,8 +104,9 @@ def save_srt_file(subtitles, engine):
     messagebox.showinfo("Info", f"Translation saved to {output_file_path}")
 
 def translate_google_api():
-    api_key = read_api_key('google')
+    api_key = read_specific_api_key('google')
     if not api_key:
+        messagebox.showerror("Error", "API key for Google Translate not found.")
         return
 
     from_lang = from_var.get()
@@ -120,7 +144,7 @@ def translate_google_api():
             translated_subtitles.append(subtitle)
         except Exception as e:
             error_message = str(e)
-            output_text.insert(tk.END, f"\nError during translation request:\n{error_message}\n")
+            status_text.insert(tk.END, f"\nError during translation request:\n{error_message}\n")
             messagebox.showerror("Error", f"Translation request failed: {e}")
             break
 
@@ -128,12 +152,15 @@ def translate_google_api():
     save_srt_file(translated_subtitles, 'google')
 
 def translate_gpt_api():
-    api_key = read_api_key('gpt')
+    api_key = read_specific_api_key('gpt')
     if not api_key:
+        messagebox.showerror("Error", "API key for GPT not found.")
         return
 
     from_lang = from_var.get()
     to_lang = to_var.get()
+
+    additional_prompt = additional_prompt_entry.get()
 
     merge_texts = merge_checkbox_var.get()
     from_on_top = from_on_top_checkbox_var.get()
@@ -148,7 +175,8 @@ def translate_gpt_api():
     for i in range(0, len(subtitles), blocks_to_translate):
         subtitle_blocks = subtitles[i:i+blocks_to_translate]
 
-        prompt = f"Please translate the text of this subtitle file from {from_lang} to {to_lang}. Keep the same file structure and keep in mind that you shouldn't just translate line by line, sometimes you need the whole context to translate.\n\n"
+        prompt = f"Please translate the text of this subtitle file from {from_lang} to {to_lang}. Keep the same file structure and keep in mind that you shouldn't just translate line by line, sometimes you need the whole context to translate. {additional_prompt}\n\n"
+        status_text.insert(tk.END, f"\nThe prompt is :\n{prompt}\n")
         prompt += "\n".join(str(subtitle) for subtitle in subtitle_blocks)
 
         try:
@@ -163,7 +191,7 @@ def translate_gpt_api():
             translated_subtitles.extend(pysrt.from_string(translation))
         except Exception as e:
             error_message = str(e)
-            output_text.insert(tk.END, f"\nError during translation request:\n{error_message}\n")
+            status_text.insert(tk.END, f"\nError during translation request:\n{error_message}\n")
             messagebox.showerror("Error", f"Translation request failed: {e}")
             break
 
@@ -180,13 +208,15 @@ def translate_gpt_api():
 def update_blocks_to_translate(value):
     global blocks_to_translate
     blocks_to_translate = int(value)
-    output_text.insert(tk.END, f"Blocks to translate updated to: {blocks_to_translate}\n")
+    status_text.insert(tk.END, f"Blocks to translate updated to: {blocks_to_translate}\n")
 
-def enable_disable_blocks_input(*args):
+def enable_disable_gpt_options(*args):
     if translateEngine_var.get() == "gpt":
         blocks_menu.config(state="normal")
+        additional_prompt_entry.config(state="normal")
     else:
         blocks_menu.config(state="disabled")
+        additional_prompt_entry.config(state="disabled")
 
 def createUI(root):
     file_button = tk.Button(root, text="Import .srt File", command=import_file)
@@ -233,28 +263,36 @@ def createUI(root):
     gpt_radio = tk.Radiobutton(options_frame, text="GPT-4", variable=translateEngine_var, value="gpt")
     gpt_radio.grid(row=3, column=2, padx=5, pady=5)
 
-    translateEngine_var.trace("w", enable_disable_blocks_input)
+    translateEngine_var.trace("w", enable_disable_gpt_options)
 
-    blocks_label = tk.Label(root, text="[GPT option] Blocks to translate:")
+    blocks_label = tk.Label(root, text="[GPT options] Blocks to translate:")
     blocks_label.pack(pady=5)
     
     global blocks_menu
     blocks_menu = tk.OptionMenu(root, tk.StringVar(value=str(blocks_to_translate)), "5", "10", "20", "40", command=update_blocks_to_translate)
     blocks_menu.pack(pady=5)
 
-    enable_disable_blocks_input()
+    additional_prompt_label = tk.Label(root, text="Additional Prompt:")
+    additional_prompt_label.pack(pady=5)
+
+    global additional_prompt_entry
+    additional_prompt_entry = tk.Entry(root, width=50)
+    additional_prompt_entry.pack(pady=5)
+
+    enable_disable_gpt_options()
 
     translate_button = tk.Button(root, text="Translate", command=translate_srt)
     translate_button.pack(pady=20)
 
-    output_label = tk.Label(root, text="Output:")
-    output_label.pack(pady=5)
-    global output_text
-    output_text = tk.Text(root, height=20, width=80)
-    output_text.pack(pady=10)
+    status_label = tk.Label(root, text="Status:")
+    status_label.pack(pady=5)
+    global status_text
+    status_text = tk.Text(root, height=12, width=80)
+    status_text.pack(pady=10)
 
 root = tk.Tk()
 root.title("Subtitle Translator")
 createUI(root)
-
+load_api_keys()
 root.mainloop()
+
