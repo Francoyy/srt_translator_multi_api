@@ -5,6 +5,7 @@ import json
 import requests
 import sys
 import os
+from openai import OpenAI
 
 # Global variables
 translateEngine = "gpt"
